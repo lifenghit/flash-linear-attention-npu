@@ -1,6 +1,6 @@
 # Finalize 输出布局、dtype 与片上转换
 
-设计规则版本：V3。接口见 [api.md](api.md)。布局直写、梯度 dtype 和参数片上转换
+设计规则版本：V4。接口见 [api.md](api.md)。布局直写、梯度 dtype 和参数片上转换
 共用原有 FP32 数学计算与 workspace。下面分别说明布局、写回、类型转换和 raw tiling。
 
 ## 布局与内部总接口适配
@@ -100,3 +100,30 @@ A2/A3 总接口按原始 beta dtype 分配 db，通过现有 model_layout 调用
 输入 BetaT 与输出 DTYPE_D_BETA 分离，原 FP32 数学和 UB 生命周期保持不变，
 仅最终 pack/store 使用输出类型。独立 Finalize API 继续要求 db dtype 与其 beta 输入一致；
 新增组合只供融合 sigmoid 的总接口路径使用。
+
+## A2/A3 流水：首带 kNeg 在等待 Cube 第 6 阶段期间生成
+
+设计规则版本升到 V4：布局、dtype、workspace 大小和全部数学计算不变，只调整 Vector 与 Cube 之间
+一处握手的先后。适用范围为 `op_kernel/arch22` 的生产路径（`LAST_STAGE` 12、非 CAPTURE），
+且只对满块（`validRows == 64`）生效。
+
+满块的 kNeg（上带）只依赖 k、原始 gk 和带中心，三者在第 5 阶段之后都驻留在 UB；它不依赖
+Cube 第 6 阶段的输出。原顺序里 Vector 做完第 5 阶段后要等 Cube 第 6 阶段约 2.3 us/项，期间空闲。
+
+| | 原顺序 | 新顺序 |
+| --- | --- | --- |
+| Vector | 第 5 阶段 → 等 `S6_READY` → 第 7 阶段头部（两个下三角矩阵）→ 首带 kNeg → qPos/bkPos | 第 5 阶段 → 首带 kNeg（`PreGenerateFirstBandKNeg`，发 `BAND_READY`）→ 等 `S6_READY` → 第 7 阶段头部 → 发 `LOWER_READY` → qPos/bkPos |
+| Cube 第 8 阶段 | 等 `BAND_READY` 后载入 | 首带先等 `LOWER_READY`，再等 `BAND_READY`，然后载入 |
+
+- 同步：新增 Vector → Cube 旗号 `LOWER_READY`（编号 5）。AIV → Cube 方向已占用 0、1、10、12、13
+  （后两个来自 `S5_DONE + bank`），两个方向的旗号空间相互独立。
+- 计数：Vector 每个工作项置位一次（第 7 阶段头部写完下三角矩阵之后，奇数头时缺席的 Vector 单元
+  在握手循环之前补一次）；Cube 只在一个工作项的首带等待一次。两边的条件是同一个表达式
+  （`LAST_STAGE` 12 且非 CAPTURE / `FINALIZE_K` 且非 CAPTURE）。
+- UB：`PreGenerateFirstBandKNeg` 只使用带临时区 `[88, 120)`、`[120, 152)` KiB、`bandExp` `[160, 176)` KiB 和 `center`；
+  第 5 阶段的结果在 `[0, 80)` KiB，不受影响。函数末尾用一对 `V_MTE2` 事件保证第 7 阶段头部的
+  MTE2 载入不会覆盖仍在被读的临时区。首带的带中心与 `bandExp` 保持有效，所以第 7 阶段的带循环
+  跳过首带的前导段和 kNeg 相位，只做 qPos/bkPos。
+- 不包含：非满块。不满 64 行的块由第 7 阶段头部重新载入 q / k / gk，保持原顺序。
+- 实测（A3，`T=32768`、`H=32`，24 核，bf16）：`Task Duration` 13194 → 12593 us（−4.1%），Vector 等
+  `S6_READY` 773 → 300 us，输出逐位一致。把第二带的 kNeg 也提前生成没有额外收益，不纳入。

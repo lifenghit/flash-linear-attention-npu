@@ -305,6 +305,15 @@ __aicore__ inline void RunFinalize(GM_ADDR k, GM_ADDR v, GM_ADDR gk, GM_ADDR akk
                                                                         owner, core, capture, bank ^ 1);
                             }
                         }
+                        if constexpr (LAST_STAGE >= 11 && !CAPTURE) {
+                            if (previousHead < tiling.heads) {
+                                const ChunkInfo preChunk = ResolveChunk(tiling, cu, indices, previousChunk);
+                                // kNeg of the upper band does not need the Cube Stage 6: generate it during that wait.
+                                if (preChunk.validRows == CHUNK_SIZE) {
+                                    vector.PreGenerateFirstBandKNeg(owner, core, bank ^ 1);
+                                }
+                            }
+                        }
                         if constexpr (LAST_STAGE >= 7) {
                             AscendC::CrossCoreWaitFlag<0x2, PIPE_MTE2>(S6_READY + (bank ^ 1));
                             if (previousHead < tiling.heads) {
@@ -314,7 +323,11 @@ __aicore__ inline void RunFinalize(GM_ADDR k, GM_ADDR v, GM_ADDR gk, GM_ADDR akk
                                                                   core, capture, bank ^ 1);
                             } else if constexpr (LAST_STAGE >= 8) {
                                 const ChunkInfo chunk = ResolveChunk(tiling, cu, indices, previousChunk);
-                                for (int32_t start = ((chunk.validRows - 1) / 32) * 32; start >= 0; start -= 32) {
+                                if constexpr (LAST_STAGE >= 11 && !CAPTURE) {
+                    // The absent owner of an odd-head work closes the collective, once per work.
+                    AscendC::CrossCoreSetFlag<0x2, PIPE_MTE3>(LOWER_READY);
+                }
+                for (int32_t start = ((chunk.validRows - 1) / 32) * 32; start >= 0; start -= 32) {
                                     AscendC::CrossCoreSetFlag<0x2, PIPE_MTE3>(BAND_READY);
                                     AscendC::CrossCoreWaitFlag<0x2, PIPE_MTE3>(BAND_LOADED);
                                     if constexpr (LAST_STAGE >= 10) {
@@ -360,6 +373,15 @@ __aicore__ inline void RunFinalize(GM_ADDR k, GM_ADDR v, GM_ADDR gk, GM_ADDR akk
                                                                         capture, bank);
                             }
                         }
+                        if constexpr (LAST_STAGE >= 11 && !CAPTURE) {
+                            if (head < tiling.heads) {
+                                const ChunkInfo preChunk = ResolveChunk(tiling, cu, indices, chunkIndex);
+                                // kNeg of the upper band does not need the Cube Stage 6: generate it during that wait.
+                                if (preChunk.validRows == CHUNK_SIZE) {
+                                    vector.PreGenerateFirstBandKNeg(owner, core, bank);
+                                }
+                            }
+                        }
                         if constexpr (LAST_STAGE >= 7) {
                             AscendC::CrossCoreWaitFlag<0x2, PIPE_MTE2>(S6_READY + bank);
                             if (head < tiling.heads) {
@@ -369,7 +391,11 @@ __aicore__ inline void RunFinalize(GM_ADDR k, GM_ADDR v, GM_ADDR gk, GM_ADDR akk
                                                                   bank);
                             } else if constexpr (LAST_STAGE >= 8) {
                                 const ChunkInfo chunk = ResolveChunk(tiling, cu, indices, chunkIndex);
-                                for (int32_t start = ((chunk.validRows - 1) / 32) * 32; start >= 0; start -= 32) {
+                                if constexpr (LAST_STAGE >= 11 && !CAPTURE) {
+                    // The absent owner of an odd-head work closes the collective, once per work.
+                    AscendC::CrossCoreSetFlag<0x2, PIPE_MTE3>(LOWER_READY);
+                }
+                for (int32_t start = ((chunk.validRows - 1) / 32) * 32; start >= 0; start -= 32) {
                                     AscendC::CrossCoreSetFlag<0x2, PIPE_MTE3>(BAND_READY);
                                     AscendC::CrossCoreWaitFlag<0x2, PIPE_MTE3>(BAND_LOADED);
                                     if constexpr (LAST_STAGE >= 10) {

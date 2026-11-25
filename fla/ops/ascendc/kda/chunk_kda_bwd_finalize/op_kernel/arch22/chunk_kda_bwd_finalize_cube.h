@@ -361,6 +361,13 @@ public:
                                   int64_t firstHead, uint32_t core, uint32_t bank, GM_ADDR capture)
     {
         for (int32_t start = ((chunk.validRows - 1) / 32) * 32; start >= 0; start -= 32) {
+            if constexpr (FINALIZE_K && !CAPTURE) {
+                // kNeg of the upper band was generated before the Vector waited for Stage 6; the
+                // lower matrices only after it. The Vector notifies once per work.
+                if (start == ((chunk.validRows - 1) / 32) * 32) {
+                    AscendC::CrossCoreWaitFlag<0x2, PIPE_MTE2>(LOWER_READY);
+                }
+            }
             AscendC::CrossCoreWaitFlag<0x2, PIPE_MTE2>(BAND_READY);
             const bool compact = FINALIZE_K && !CAPTURE && chunk.validRows == CHUNK_SIZE && start == 0;
             for (uint32_t owner = 0; owner < HEADS_PER_WORK; ++owner) {

@@ -99,6 +99,9 @@ constexpr uint16_t S10_FIRST_READY = 11;
 
 constexpr uint16_t KE_READY = 0;
 constexpr uint16_t WORK_OPEN = 8;
+// Vector -> Cube: the FP32 lower matrices of the current work are in GM. AIV -> Cube uses 0, 1, 10,
+// 12 and 13 (S5_DONE + bank); the two directions have independent flag spaces, so 5 is free here.
+constexpr uint16_t LOWER_READY = 5;
 
 // Host-prepared metadata: no sequence search or tail inference in the hot loop.
 struct ChunkInfo {
